@@ -1,0 +1,1173 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>便签墙：2分钟结束 + 消失拼爱心 + 自动音乐 + 结束弹窗</title>
+		<style>
+			* {
+				box-sizing: border-box;
+				margin: 0;
+				padding: 0;
+			}
+
+			body {
+				font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+				background-image: linear-gradient(0deg, #eee 1px, transparent 0),
+					linear-gradient(90deg, #eee 1px, transparent 0);
+				background-size: 30px 30px;
+				color: #333;
+				min-height: 100vh;
+				overflow: hidden;
+			}
+
+			body.has-maximized-card {
+				overflow: hidden;
+			}
+
+			body.is-mobile {
+				overflow-y: auto;
+			}
+
+			/* 编队期间禁用交互，避免拖拽/点击打断 */
+			body.is-forming-heart .card {
+				pointer-events: none;
+			}
+
+			/* 弹窗出现时让背景更聚焦（可选效果） */
+			body.has-end-modal #board {
+				filter: saturate(1.05) brightness(0.96);
+			}
+
+			#board {
+				position: relative;
+				width: 100vw;
+				height: 100vh;
+				overflow: hidden;
+				transition: filter 500ms ease;
+			}
+
+			body.is-mobile #board {
+				height: auto;
+				min-height: 100vh;
+			}
+
+			.card {
+				position: absolute;
+				width: 220px;
+				border-radius: 12px;
+				box-shadow: 0 16px 35px rgba(0, 0, 0, 0.2);
+				background: #fff;
+				border: 1px solid rgba(0, 0, 0, 0.08);
+				overflow: hidden;
+				opacity: 0;
+				transform-origin: center;
+
+				/* ✅ 关键：基础 transform 由 JS 写入 --base-transform，
+				   动画只叠加 --pulse/--bob，避免覆盖 rotate/scale */
+				transform: var(--base-transform, scale(1) rotate(0deg))
+					scale(var(--pulse, 1))
+					translateY(var(--bob, 0px));
+
+				transition: opacity 350ms ease, left 350ms ease, top 350ms ease,
+					width 350ms ease, height 350ms ease, border-radius 350ms ease;
+				will-change: transform, opacity, left, top;
+			}
+
+			.card.dragging {
+				transition: none;
+				box-shadow: 0 22px 45px rgba(0, 0, 0, 0.35);
+			}
+
+			.card.maximized {
+				position: fixed;
+				inset: 0;
+				width: 100vw;
+				height: 100vh;
+				border-radius: 0;
+				box-shadow: 0 28px 60px rgba(0, 0, 0, 0.4);
+				display: flex;
+				flex-direction: column;
+				/* 最大化时不做心跳动画叠加 */
+				animation: none !important;
+				--pulse: 1;
+				--bob: 0px;
+			}
+
+			.card-header {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				padding: 10px 12px;
+				background: rgba(255, 255, 255, 0.7);
+				cursor: grab;
+				user-select: none;
+				touch-action: pan-y;
+			}
+
+			.card-header.dragging {
+				cursor: grabbing;
+			}
+
+			.window-controls {
+				display: flex;
+				align-items: center;
+				gap: 6px;
+			}
+
+			.window-controls .control {
+				position: relative;
+				width: 12px;
+				height: 12px;
+				border-radius: 50%;
+				border: 1px solid rgba(0, 0, 0, 0.08);
+				background: #ccc;
+				cursor: pointer;
+				outline: none;
+				padding: 0;
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+			}
+
+			.window-controls .control.close {
+				background: #ff5f57;
+				border-color: #e0443e;
+			}
+
+			.window-controls .control.minimize {
+				background: #febb2e;
+				border-color: #dea123;
+			}
+
+			.window-controls .control.maximize {
+				background: #28c840;
+				border-color: #1aab2c;
+			}
+
+			.window-controls .control::after {
+				content: '';
+				position: absolute;
+				top: 50%;
+				left: 50%;
+				transform: translate(-50%, -50%);
+				opacity: 0;
+				transition: opacity 0.2s ease;
+			}
+
+			.card-header:hover .window-controls .control::after {
+				opacity: 0.8;
+			}
+
+			.window-controls .control.close::after {
+				content: '×';
+				font-size: 10px;
+				line-height: 1;
+				font-weight: 700;
+				color: rgba(0, 0, 0, 0.7);
+			}
+
+			.window-controls .control.minimize::after {
+				width: 6px;
+				height: 2px;
+				background: rgba(0, 0, 0, 0.6);
+			}
+
+			.window-controls .control.maximize::after {
+				width: 6px;
+				height: 6px;
+				background: linear-gradient(
+					45deg,
+					rgba(0, 0, 0, 0.6) 0%,
+					rgba(0, 0, 0, 0.6) 45%,
+					transparent 45%,
+					transparent 55%,
+					rgba(0, 0, 0, 0.6) 55%,
+					rgba(0, 0, 0, 0.6) 100%
+				);
+			}
+
+			.card-title {
+				font-size: 13px;
+				font-weight: 600;
+				color: rgba(0, 0, 0, 0.55);
+				padding-left: 10px;
+				flex: 1;
+			}
+
+			.card-body {
+				padding: 16px;
+				font-size: 16px;
+				line-height: 1.4;
+				font-weight: 600;
+				color: rgba(0, 0, 0, 0.72);
+				word-break: break-word;
+				overflow-wrap: anywhere;
+				white-space: normal;
+			}
+
+			.card.maximized .card-title {
+				display: none;
+			}
+
+			.card.maximized .card-body {
+				flex: 1;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				width: 100%;
+				height: 100%;
+				text-align: center;
+				padding: clamp(32px, min(10vw, 10vh), 128px);
+				padding-top: clamp(72px, min(14vw, 14vh), 192px);
+				font-size: clamp(48px, min(18vw, 18vh), 200px);
+				line-height: 1.05;
+			}
+
+			@media (max-width: 768px) {
+				.card {
+					width: 180px;
+					border-radius: 10px;
+				}
+
+				.card-body {
+					padding: 14px;
+					font-size: 14px;
+				}
+
+				.card-title {
+					font-size: 12px;
+				}
+			}
+
+			/* 音乐按钮：仅在需要用户交互解锁有声时显示 */
+			#musicToggle {
+				position: fixed;
+				right: 16px;
+				bottom: 16px;
+				z-index: 2000001;
+				border: 1px solid rgba(0, 0, 0, 0.12);
+				background: rgba(255, 255, 255, 0.85);
+				backdrop-filter: blur(8px);
+				-webkit-backdrop-filter: blur(8px);
+				border-radius: 999px;
+				padding: 10px 14px;
+				font-size: 14px;
+				font-weight: 700;
+				color: rgba(0, 0, 0, 0.72);
+				cursor: pointer;
+				box-shadow: 0 10px 25px rgba(0, 0, 0, 0.18);
+				display: none;
+			}
+			#musicToggle:active {
+				transform: scale(0.98);
+			}
+
+			/* ======================
+			   ✅ 爱心轻跳 + 呼吸动画
+			   ====================== */
+			@property --pulse {
+				syntax: '<number>';
+				inherits: false;
+				initial-value: 1;
+			}
+			@property --bob {
+				syntax: '<length>';
+				inherits: false;
+				initial-value: 0px;
+			}
+
+			@keyframes heartPop {
+				0% {
+					--pulse: 1;
+					--bob: 0px;
+				}
+				35% {
+					--pulse: 1.08;
+					--bob: -10px;
+				}
+				70% {
+					--pulse: 1.02;
+					--bob: 0px;
+				}
+				100% {
+					--pulse: 1.03;
+					--bob: -2px;
+				}
+			}
+
+			@keyframes heartBreathe {
+				0%,
+				100% {
+					--pulse: 1;
+					--bob: -2px;
+				}
+				50% {
+					--pulse: 1.035;
+					--bob: 0px;
+				}
+			}
+
+			.card.heart-animate {
+				animation: heartPop 650ms ease-out 1,
+					heartBreathe 2800ms ease-in-out 650ms infinite;
+			}
+
+			/* ======================
+			   ✅ 结束弹窗
+			   ====================== */
+			.modal {
+				position: fixed;
+				inset: 0;
+				z-index: 3000000;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				background: rgba(0, 0, 0, 0.28);
+				opacity: 0;
+				pointer-events: none;
+				transition: opacity 600ms ease;
+			}
+
+			.modal.show {
+				opacity: 1;
+				pointer-events: auto;
+			}
+
+			.modal-card {
+				width: min(520px, calc(100vw - 48px));
+				border-radius: 18px;
+				background: rgba(255, 255, 255, 0.92);
+				backdrop-filter: blur(10px);
+				-webkit-backdrop-filter: blur(10px);
+				border: 1px solid rgba(0, 0, 0, 0.08);
+				box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+				padding: 22px 20px 18px;
+				text-align: center;
+				transform: translateY(18px) scale(0.98);
+				transition: transform 600ms ease;
+			}
+
+			.modal.show .modal-card {
+				transform: translateY(0) scale(1);
+			}
+
+			.modal-title {
+				font-size: 34px;
+				line-height: 1;
+				margin-bottom: 10px;
+			}
+
+			.modal-text {
+				font-size: 22px;
+				font-weight: 800;
+				color: rgba(0, 0, 0, 0.78);
+				letter-spacing: 0.5px;
+			}
+
+			.modal-btn {
+				margin-top: 16px;
+				border: 1px solid rgba(0, 0, 0, 0.12);
+				background: rgba(255, 255, 255, 0.9);
+				border-radius: 999px;
+				padding: 10px 16px;
+				font-size: 14px;
+				font-weight: 800;
+				cursor: pointer;
+			}
+			.modal-btn:active {
+				transform: scale(0.98);
+			}
+		</style>
+	</head>
+	<body>
+		<div id="board"></div>
+
+		<!-- 把 music.MP3 放在与本 HTML 同一目录 -->
+		<audio id="bgm" loop preload="auto">
+			<source src="music.MP3" type="audio/mpeg" />
+		</audio>
+		<button id="musicToggle" aria-label="背景音乐开关">🔊 开启音乐</button>
+
+		<!-- 结束弹窗 -->
+		<div id="endModal" class="modal" aria-hidden="true">
+			<div class="modal-card" role="dialog" aria-modal="true" aria-label="祝福弹窗">
+				<div class="modal-title">💖</div>
+				<div class="modal-text">希望你天天开心</div>
+				<button id="endModalBtn" class="modal-btn" type="button">知道啦</button>
+			</div>
+		</div>
+
+		<script>
+			// 出错弹窗（方便定位）
+			window.addEventListener('error', e => {
+				alert(
+					'JS 报错：' +
+						(e.message || 'unknown') +
+						'\n文件：' +
+						(e.filename || '') +
+						'\n行号：' +
+						(e.lineno || '')
+				)
+			})
+
+			const board = document.getElementById('board')
+
+			const messages = [
+				'每天元气满满',
+				'记得好心情',
+				'今天辛苦啦',
+				'早点休息',
+				'记得吃水果',
+				'加油，你可以的',
+                                '天天开心',
+                                '天天快乐',
+				'烦恼都消散',
+				'保持微笑呀',
+				'愿所有烦恼都消失',
+				'适当歇歇',
+				'梦想总会实现',
+				'天气冷了，多穿衣服',
+				'记得给自己放松',
+				'每天都要元气满满',
+				'今天也要好好爱自己',
+				'适当休息一下',
+				'记得吃水果哦'
+			]
+
+			const colors = [
+				'#ffe0e3',
+				'#c7f0ff',
+				'#ffd8a8',
+				'#d9f2d9',
+				'#e5d7ff',
+				'#f9f7d9',
+				'#d2f0f8',
+				'#ffd4f5'
+			]
+
+			const cardStates = new WeakMap()
+			const MAXIMIZED_LAYER = 1000000
+			let activeMaximizedCard = null
+			const pointerMediaQuery = window.matchMedia('(pointer: coarse)')
+			let isMobile = pointerMediaQuery.matches || window.innerWidth <= 768
+
+			let maxCards = isMobile ? 120 : 180
+			const initialCardCount = isMobile ? 18 : 30
+			let spawnInterval = isMobile ? 700 : 400
+			let zIndexCursor = 200
+			let spawnTimer = null
+
+			// ===== 总时长目标：2 分钟左右 =====
+			const TARGET_TOTAL_MS = 120000 // 2min
+			const EFFECT_BUDGET_MS = 10000 // 预留给“飞出+拼装”的时间
+
+			// ===== 到 80 张触发一次 =====
+			const HEART_TRIGGER_COUNT = 80
+			let heartTriggered = false
+			let totalCreatedCards = 0
+
+			document.body.classList.toggle('is-mobile', isMobile)
+
+			function randomFrom(array) {
+				return array[Math.floor(Math.random() * array.length)]
+			}
+
+			function clamp(value, min, max) {
+				return Math.min(Math.max(value, min), max)
+			}
+
+			// ✅ 不再直接写 transform，避免覆盖心跳/呼吸动画
+			function applyTransform(card, state) {
+				const scale = state.scale ?? 1
+				const angle = state.angle ?? 0
+				card.style.setProperty(
+					'--base-transform',
+					`scale(${scale}) rotate(${angle}deg)`
+				)
+			}
+
+			function setCardTransitionMs(card, ms) {
+				card.style.transitionDuration = `${ms}ms`
+			}
+
+			function recomputeSpawnIntervalFor2Min() {
+				const triggerTimeMs = Math.max(TARGET_TOTAL_MS - EFFECT_BUDGET_MS, 30000)
+				const need = Math.max(HEART_TRIGGER_COUNT - initialCardCount, 1)
+				const interval = Math.round(triggerTimeMs / need)
+				spawnInterval = clamp(interval, 800, 4000)
+			}
+
+			function bringToFront(card) {
+				if (card === activeMaximizedCard) {
+					card.style.zIndex = MAXIMIZED_LAYER
+					return
+				}
+				zIndexCursor += 1
+				if (activeMaximizedCard && zIndexCursor >= MAXIMIZED_LAYER) {
+					zIndexCursor = MAXIMIZED_LAYER - 1
+				}
+				card.style.zIndex = zIndexCursor
+			}
+
+			function updateBodyMaximizedState() {
+				document.body.classList.toggle(
+					'has-maximized-card',
+					Boolean(activeMaximizedCard)
+				)
+			}
+
+			function scheduleNextSpawn() {
+				clearTimeout(spawnTimer)
+				spawnTimer = setTimeout(() => {
+					if (!document.hidden && !heartTriggered) {
+						createCard()
+					}
+					scheduleNextSpawn()
+				}, spawnInterval)
+			}
+
+			function syncMobileMode() {
+				const nextIsMobile =
+					pointerMediaQuery.matches || window.innerWidth <= 768
+				if (nextIsMobile === isMobile) return
+
+				isMobile = nextIsMobile
+				maxCards = isMobile ? 120 : 180
+				document.body.classList.toggle('is-mobile', isMobile)
+
+				recomputeSpawnIntervalFor2Min()
+			}
+
+			function handleBoardClick(event) {
+				const control = event.target.closest('.control')
+				if (!control) return
+				const card = control.closest('.card')
+				if (!card || !board.contains(card)) return
+
+				event.preventDefault()
+				if (control.classList.contains('close')) closeCard(card)
+				else if (control.classList.contains('minimize')) minimizeCard(card)
+				else if (control.classList.contains('maximize')) toggleMaximize(card)
+			}
+
+			function handleBoardPointerDown(event) {
+				const card = event.target.closest('.card')
+				if (!card || !board.contains(card)) return
+
+				const control = event.target.closest('.control')
+				const header = event.target.closest('.card-header')
+				const pointerType = event.pointerType || 'mouse'
+				const isPrimaryPointer = event.isPrimary !== false
+
+				if (
+					header &&
+					!control &&
+					pointerType !== 'touch' &&
+					isPrimaryPointer
+				) {
+					startDrag(event, card)
+					return
+				}
+				bringToFront(card)
+			}
+
+			function handleBoardDoubleClick(event) {
+				const header = event.target.closest('.card-header')
+				if (!header || event.target.closest('.control')) return
+
+				const card = header.closest('.card')
+				if (!card || !board.contains(card)) return
+				toggleMaximize(card)
+			}
+
+			board.addEventListener('click', handleBoardClick)
+			board.addEventListener('pointerdown', handleBoardPointerDown)
+			board.addEventListener('dblclick', handleBoardDoubleClick)
+
+			function closeCard(card) {
+				const state = cardStates.get(card)
+				if (!state || state.closing) return
+				if (card === activeMaximizedCard) {
+					activeMaximizedCard = null
+					updateBodyMaximizedState()
+				}
+				state.closing = true
+				setCardTransitionMs(card, 350)
+				state.scale = 0.1
+				card.style.opacity = '0'
+				applyTransform(card, state)
+				card.addEventListener('transitionend', () => card.remove(), { once: true })
+				setTimeout(() => {
+					if (card.isConnected) card.remove()
+				}, 500)
+			}
+
+			function minimizeCard(card) {
+				const state = cardStates.get(card)
+				if (!state || state.closing) return
+
+				const runMinimize = () => {
+					state.closing = true
+					bringToFront(card)
+					setCardTransitionMs(card, 350)
+
+					const bottom = Math.max(window.innerHeight - 24, 0)
+					const targetLeft = clamp(
+						state.left,
+						16,
+						Math.max(window.innerWidth - card.offsetWidth - 16, 16)
+					)
+
+					state.left = targetLeft
+					state.top = bottom
+					state.scale = 0.1
+					state.angle = 0
+					card.style.left = `${targetLeft}px`
+					card.style.top = `${bottom}px`
+					card.style.opacity = '0.35'
+					applyTransform(card, state)
+
+					card.addEventListener('transitionend', () => card.remove(), {
+						once: true
+					})
+					setTimeout(() => {
+						if (card.isConnected) card.remove()
+					}, 600)
+				}
+
+				if (state.maximized) {
+					restoreFromMaximize(card, state)
+					requestAnimationFrame(() => requestAnimationFrame(runMinimize))
+					return
+				}
+
+				runMinimize()
+			}
+
+			function toggleMaximize(card) {
+				const state = cardStates.get(card)
+				if (!state || state.closing) return
+				if (state.maximized) restoreFromMaximize(card, state)
+				else maximizeCard(card, state)
+			}
+
+			function maximizeCard(card, state) {
+				if (activeMaximizedCard && activeMaximizedCard !== card) {
+					const activeState = cardStates.get(activeMaximizedCard)
+					if (activeState) restoreFromMaximize(activeMaximizedCard, activeState)
+				}
+
+				state.beforeMaximize = {
+					left: state.left,
+					top: state.top,
+					scale: state.scale ?? 1,
+					angle: state.angle ?? 0,
+					width: card.offsetWidth,
+					height: card.offsetHeight,
+					inlinePosition: card.style.position
+				}
+
+				card.classList.add('maximized')
+				card.style.position = 'fixed'
+				card.style.left = '0px'
+				card.style.top = '0px'
+				card.style.width = '100vw'
+				card.style.height = '100vh'
+				card.style.borderRadius = '0'
+
+				state.left = 0
+				state.top = 0
+				state.scale = 1
+				state.angle = 0
+				applyTransform(card, state)
+
+				activeMaximizedCard = card
+				bringToFront(card)
+				state.maximized = true
+				updateBodyMaximizedState()
+			}
+
+			function restoreFromMaximize(card, state) {
+				const previous = state.beforeMaximize
+				if (!previous) return
+
+				card.classList.remove('maximized')
+				card.style.position = previous.inlinePosition || 'absolute'
+				card.style.left = `${previous.left}px`
+				card.style.top = `${previous.top}px`
+				card.style.width = `${previous.width}px`
+				card.style.height = `${previous.height}px`
+				card.style.borderRadius = ''
+
+				state.left = previous.left
+				state.top = previous.top
+				state.scale = previous.scale ?? 1
+				state.angle = previous.angle ?? 0
+				applyTransform(card, state)
+
+				state.maximized = false
+				if (activeMaximizedCard === card) {
+					activeMaximizedCard = null
+					updateBodyMaximizedState()
+				}
+
+				bringToFront(card)
+
+				setTimeout(() => {
+					if (!state.maximized && !state.closing) {
+						card.style.width = ''
+						card.style.height = ''
+						card.style.position = previous.inlinePosition || ''
+						state.beforeMaximize = null
+					}
+				}, 360)
+			}
+
+			function startDrag(event, card) {
+				const control = event.target.closest('.control')
+				if (control) return
+
+				const state = cardStates.get(card)
+				if (!state || state.closing || state.maximized) return
+
+				event.preventDefault()
+				bringToFront(card)
+
+				const header = card.querySelector('.card-header')
+				card.classList.add('dragging')
+				header.classList.add('dragging')
+
+				state.dragging = true
+				state.dragOffsetX = event.clientX - state.left
+				state.dragOffsetY = event.clientY - state.top
+
+				let dragFrame = null
+				let pendingLeft = state.left
+				let pendingTop = state.top
+
+				const commitDrag = () => {
+					dragFrame = null
+					const maxLeft = Math.max(window.innerWidth - card.offsetWidth, 0)
+					const maxTop = Math.max(window.innerHeight - card.offsetHeight, 0)
+					state.left = clamp(pendingLeft, -card.offsetWidth * 0.4, maxLeft)
+					state.top = clamp(pendingTop, -card.offsetHeight * 0.4, maxTop)
+					card.style.left = `${state.left}px`
+					card.style.top = `${state.top}px`
+				}
+
+				const handlePointerMove = moveEvent => {
+					if (!state.dragging) return
+					pendingLeft = moveEvent.clientX - state.dragOffsetX
+					pendingTop = moveEvent.clientY - state.dragOffsetY
+					if (dragFrame === null) dragFrame = requestAnimationFrame(commitDrag)
+				}
+
+				const handlePointerUp = () => {
+					state.dragging = false
+					card.classList.remove('dragging')
+					header.classList.remove('dragging')
+					if (dragFrame !== null) {
+						cancelAnimationFrame(dragFrame)
+						commitDrag()
+					}
+					document.removeEventListener('pointermove', handlePointerMove)
+					document.removeEventListener('pointerup', handlePointerUp)
+				}
+
+				document.addEventListener('pointermove', handlePointerMove)
+				document.addEventListener('pointerup', handlePointerUp)
+			}
+
+			// ======================
+			// 飞出消失 -> 逐个拼爱心（节奏更慢）
+			// ======================
+			const VANISH_MS = 1200
+			const POP_IN_MS = 700
+			const STAGGER_MS = isMobile ? 110 : 90
+
+			function getAllCards() {
+				return Array.from(board.querySelectorAll('.card'))
+			}
+
+			function ensureNoMaximized() {
+				if (activeMaximizedCard) {
+					const st = cardStates.get(activeMaximizedCard)
+					if (st) restoreFromMaximize(activeMaximizedCard, st)
+				}
+			}
+
+			function randomOffscreenTarget(card) {
+				const W = window.innerWidth
+				const H = window.innerHeight
+				const w = card.offsetWidth || (isMobile ? 180 : 220)
+				const h = card.offsetHeight || (isMobile ? 130 : 140)
+				const pad = Math.max(W, H) * 0.18 + 120
+
+				const side = Math.floor(Math.random() * 4)
+				if (side === 0)
+					return { left: Math.random() * Math.max(W - w, 0), top: -h - pad }
+				if (side === 1)
+					return { left: W + pad, top: Math.random() * Math.max(H - h, 0) }
+				if (side === 2)
+					return { left: Math.random() * Math.max(W - w, 0), top: H + pad }
+				return { left: -w - pad, top: Math.random() * Math.max(H - h, 0) }
+			}
+
+			function heartPoint(t) {
+				const x = 16 * Math.pow(Math.sin(t), 3)
+				const y =
+					13 * Math.cos(t) -
+					5 * Math.cos(2 * t) -
+					2 * Math.cos(3 * t) -
+					Math.cos(4 * t)
+				return { x, y }
+			}
+
+			function computeHeartLayout(cards) {
+				const W = window.innerWidth
+				const H = window.innerHeight
+				const count = cards.length
+				const layout = []
+				if (!count) return layout
+
+				const scale = Math.min(W, H) / (isMobile ? 34 : 42)
+				const cx = W / 2
+				const cy = H / 2 + (isMobile ? 10 : 20)
+
+				for (let i = 0; i < count; i++) {
+					const card = cards[i]
+					const baseT = (i / count) * Math.PI * 2
+					const t = baseT + (Math.random() - 0.5) * 0.12
+					const p = heartPoint(t)
+
+					let left = cx + p.x * scale
+					let top = cy - p.y * scale
+
+					const w = card.offsetWidth || (isMobile ? 180 : 220)
+					const h = card.offsetHeight || (isMobile ? 130 : 140)
+					left -= w / 2
+					top -= h / 2
+
+					left += (Math.random() - 0.5) * (isMobile ? 10 : 14)
+					top += (Math.random() - 0.5) * (isMobile ? 10 : 14)
+
+					layout.push({ left, top })
+				}
+				return layout
+			}
+
+			function vanishAll(cards) {
+				cards.forEach(card => {
+					const st = cardStates.get(card)
+					if (!st || st.closing) return
+
+					// 形成心形前去掉可能残留的心跳动画
+					card.classList.remove('heart-animate')
+					card.style.setProperty('--pulse', 1)
+					card.style.setProperty('--bob', '0px')
+
+					setCardTransitionMs(card, VANISH_MS)
+					bringToFront(card)
+
+					const target = randomOffscreenTarget(card)
+					st.left = target.left
+					st.top = target.top
+					st.scale = 0.2
+					st.angle = (Math.random() - 0.5) * (isMobile ? 50 : 70)
+
+					card.style.left = `${st.left}px`
+					card.style.top = `${st.top}px`
+					card.style.opacity = '0'
+					applyTransform(card, st)
+				})
+			}
+
+			function assembleHeartGradually(cards) {
+				const layout = computeHeartLayout(cards)
+
+				// 先瞬移到爱心位置（不可见）
+				cards.forEach((card, i) => {
+					const st = cardStates.get(card)
+					if (!st || st.closing) return
+					const pos = layout[i]
+
+					st.left = pos.left
+					st.top = pos.top
+					st.scale = 0.25
+					st.angle = (Math.random() - 0.5) * (isMobile ? 10 : 14)
+
+					setCardTransitionMs(card, 0)
+					card.style.left = `${st.left}px`
+					card.style.top = `${st.top}px`
+					card.style.opacity = '0'
+					applyTransform(card, st)
+				})
+
+				requestAnimationFrame(() => {
+					cards.forEach((card, i) => {
+						const st = cardStates.get(card)
+						if (!st || st.closing) return
+						setTimeout(() => {
+							bringToFront(card)
+							setCardTransitionMs(card, POP_IN_MS)
+							st.scale = 1
+							st.angle = (Math.random() - 0.5) * (isMobile ? 6 : 10)
+							card.style.opacity = '1'
+							applyTransform(card, st)
+						}, i * STAGGER_MS)
+					})
+				})
+			}
+
+			function vanishThenBuildHeart() {
+				ensureNoMaximized()
+				document.body.classList.add('is-forming-heart')
+
+				clearTimeout(spawnTimer)
+				spawnTimer = null
+
+				const cards = getAllCards()
+				vanishAll(cards)
+
+				setTimeout(() => {
+					assembleHeartGradually(cards)
+
+					const total = cards.length * STAGGER_MS + POP_IN_MS + 200
+					setTimeout(() => {
+						document.body.classList.remove('is-forming-heart')
+
+						// ✅ 拼好：轻跳一下 + 持续呼吸
+						cards.forEach(c => c.classList.add('heart-animate'))
+
+						showEndModal()
+					}, total)
+				}, VANISH_MS + 100)
+			}
+
+			function createCard() {
+				const card = document.createElement('div')
+				card.className = 'card'
+
+				const color = randomFrom(colors)
+				const angleRange = isMobile ? 6 : 10
+				const angle = (Math.random() - 0.5) * angleRange
+				const entryScale = isMobile ? 0.8 : 0.65
+				const cardWidth = isMobile ? 180 : 220
+				const cardHeight = isMobile ? 130 : 140
+				const horizontalMargin = isMobile ? 12 : 16
+				const verticalMargin = isMobile ? 12 : 20
+
+				const left =
+					horizontalMargin +
+					Math.random() *
+						Math.max(window.innerWidth - cardWidth - horizontalMargin * 2, 0)
+				const top =
+					verticalMargin +
+					Math.random() *
+						Math.max(window.innerHeight - cardHeight - verticalMargin * 2, 0)
+
+				card.style.background = color
+				card.style.left = `${left}px`
+				card.style.top = `${top}px`
+				card.style.opacity = '0'
+
+				if (activeMaximizedCard && zIndexCursor >= MAXIMIZED_LAYER - 2) {
+					zIndexCursor = MAXIMIZED_LAYER - 2
+				}
+				card.style.zIndex = ++zIndexCursor
+
+				card.innerHTML = `
+					<div class="card-header">
+						<div class="window-controls">
+							<button class="control close" type="button" aria-label="关闭"></button>
+							<button class="control minimize" type="button" aria-label="最小化"></button>
+							<button class="control maximize" type="button" aria-label="最大化"></button>
+						</div>
+						<div class="card-title">温馨提示</div>
+					</div>
+					<div class="card-body">${randomFrom(messages)}</div>
+				`
+
+				const state = {
+					angle,
+					scale: entryScale,
+					left,
+					top,
+					maximized: false,
+					closing: false
+				}
+
+				cardStates.set(card, state)
+				setCardTransitionMs(card, 350)
+				applyTransform(card, state)
+				board.appendChild(card)
+
+				// 入场动画（带兜底）
+				const show = () => {
+					state.scale = 1
+					applyTransform(card, state)
+					card.style.opacity = '1'
+				}
+				if (typeof requestAnimationFrame === 'function') {
+					requestAnimationFrame(() => requestAnimationFrame(show))
+				} else {
+					setTimeout(show, 16)
+				}
+
+				// 超出上限移除最早
+				if (board.children.length > maxCards) {
+					const oldest = board.firstElementChild
+					if (oldest && oldest !== card) oldest.remove()
+				}
+
+				// 统计创建数量：到 80 触发一次
+				totalCreatedCards += 1
+				if (!heartTriggered && totalCreatedCards >= HEART_TRIGGER_COUNT) {
+					heartTriggered = true
+					setTimeout(vanishThenBuildHeart, 650)
+				}
+			}
+
+			// ======================
+			// 结束弹窗：希望你天天开心
+			// ======================
+			const endModal = document.getElementById('endModal')
+			const endModalBtn = document.getElementById('endModalBtn')
+
+			function showEndModal() {
+				if (!endModal) return
+				endModal.classList.add('show')
+				endModal.setAttribute('aria-hidden', 'false')
+				document.body.classList.add('has-end-modal')
+			}
+
+			function hideEndModal() {
+				if (!endModal) return
+				endModal.classList.remove('show')
+				endModal.setAttribute('aria-hidden', 'true')
+				document.body.classList.remove('has-end-modal')
+			}
+
+			if (endModalBtn) endModalBtn.addEventListener('click', hideEndModal)
+			if (endModal) {
+				endModal.addEventListener('click', e => {
+					if (e.target === endModal) hideEndModal()
+				})
+			}
+
+			// 初始化：按 2min 目标计算节奏
+			recomputeSpawnIntervalFor2Min()
+
+			// 初始生成
+			for (let i = 0; i < initialCardCount; i++) {
+				setTimeout(createCard, i * (isMobile ? 60 : 40))
+			}
+			scheduleNextSpawn()
+
+			// 兜底：1 秒后如果还没有任何卡片，强制再生成一批
+			setTimeout(() => {
+				if (document.querySelectorAll('.card').length === 0) {
+					for (let i = 0; i < initialCardCount; i++) {
+						setTimeout(createCard, i * 40)
+					}
+				}
+			}, 1000)
+
+			document.addEventListener('visibilitychange', () => {
+				if (!document.hidden) scheduleNextSpawn()
+			})
+
+			if (typeof pointerMediaQuery.addEventListener === 'function') {
+				pointerMediaQuery.addEventListener('change', syncMobileMode)
+			} else if (typeof pointerMediaQuery.addListener === 'function') {
+				pointerMediaQuery.addListener(syncMobileMode)
+			}
+			window.addEventListener('resize', syncMobileMode)
+
+			// ======================
+			// 背景音乐：尽量自动播放；若有声被拦截则静音播放并等用户任意交互解锁有声
+			// ======================
+			const bgm = document.getElementById('bgm')
+			const musicToggle = document.getElementById('musicToggle')
+			let musicEnabled = false
+			let waitingForGestureToUnmute = false
+
+			function updateBtn() {
+				musicToggle.textContent = musicEnabled ? '⏸ 暂停音乐' : '🔊 开启音乐'
+			}
+
+			async function startBgmTryWithSoundFirst() {
+				if (!bgm) return
+				bgm.volume = 0.6
+				bgm.muted = false
+
+				try {
+					await bgm.play()
+					musicEnabled = true
+					waitingForGestureToUnmute = false
+					musicToggle.style.display = 'none'
+					updateBtn()
+				} catch (e) {
+					try {
+						bgm.muted = true
+						await bgm.play()
+						musicEnabled = true
+						waitingForGestureToUnmute = true
+						musicToggle.style.display = 'inline-flex'
+						updateBtn()
+					} catch (e2) {
+						musicEnabled = false
+						waitingForGestureToUnmute = false
+						musicToggle.style.display = 'inline-flex'
+						updateBtn()
+					}
+				}
+			}
+
+			function unlockSoundOnce() {
+				if (!bgm) return
+				if (!musicEnabled) return
+				if (!waitingForGestureToUnmute) return
+				bgm.muted = false
+				waitingForGestureToUnmute = false
+				musicToggle.style.display = 'none'
+			}
+
+			startBgmTryWithSoundFirst()
+			updateBtn()
+
+			;['pointerdown', 'touchstart', 'keydown'].forEach(evt => {
+				window.addEventListener(evt, unlockSoundOnce, { once: true, passive: true })
+			})
+
+			musicToggle.addEventListener('click', async () => {
+				if (!bgm) return
+				try {
+					if (!musicEnabled) {
+						bgm.muted = false
+						bgm.volume = 0.6
+						await bgm.play()
+						musicEnabled = true
+						waitingForGestureToUnmute = false
+						musicToggle.style.display = 'none'
+					} else {
+						bgm.pause()
+						musicEnabled = false
+						waitingForGestureToUnmute = false
+						musicToggle.style.display = 'inline-flex'
+					}
+				} catch (e) {
+					console.warn('music play blocked:', e)
+				}
+				updateBtn()
+			})
+
+			document.addEventListener('visibilitychange', () => {
+				if (!bgm) return
+				if (document.hidden) bgm.pause()
+				else if (musicEnabled) bgm.play().catch(() => {})
+			})
+		</script>
+	</body>
+</html>
